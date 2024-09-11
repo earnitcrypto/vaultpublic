@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract ATRONVAULT is Ownable {
+    using EnumerableMap for EnumerableMap.UintToAddressMap;
+    EnumerableMap.UintToAddressMap private Tokens;
+
+    mapping(uint256 => address) public _tokens;
+    mapping(address => uint256) contractBalancePeerToken;
+    mapping(address => mapping(address => uint256)) public userBalancePeerToken;
+    uint256 public vaultTax = 400;
+    uint256 taxDenominator = 10000;
+
+    constructor(
+        address _tokenA,
+        address _tokenB
+    ) {
+        EnumerableMap.set(Tokens, 0, _tokenA);
+        EnumerableMap.set(Tokens, 1, _tokenB);
+
+        _tokens[0] = _tokenA;
+        _tokens[1] = _tokenB;
+    }
+
+    event tokenDepositComplete(address tokenA, uint256 amount);
+
+    event tokenWithdrawalComplete(address tokenA, uint256 amount);
+
+    function onlyAuthorizedTokens(address token)
+        internal
+        view
+        returns (bool isAuth)
+    {
+        for (uint256 i = 0; i < EnumerableMap.length(Tokens); i++) {
+            if (token == EnumerableMap.get(Tokens, i)) isAuth = true;
+        }
+
+        return isAuth;
+    }
+
+    function setToken(uint256 index, address newToken)
+        public
+        onlyOwner
+        returns (bool)
+    {
+        EnumerableMap.set(Tokens, index, newToken);
+        _tokens[index] = newToken;
+        return true;
+    }
+
+    function setTax(uint256 newTax) public onlyOwner {
+        require(
+            newTax > 0 && newTax <= 1500,
+            "Error: the tax can not be bigger than a 15% or less than 0%"
+        );
+        vaultTax = newTax;
+    }
+
+    function removeToken(uint256 index) public onlyOwner returns (bool) {
+        _tokens[index] = address(0);
+        return EnumerableMap.remove(Tokens, index);
+    }
+
+    function getAllTokens() public view returns (address[] memory tokens) {
+        for (uint256 i = 0; i < EnumerableMap.length(Tokens); i++) {
+            tokens[i] = (EnumerableMap.get(Tokens, i));
+        }
+
+        return tokens;
+    }
+
+    function depositAmount(
+        uint256 amount,
+        address _token,
+        address collateralToken
+    ) public {
+        require(_token != collateralToken, "The collateral must be different");
+
+        require(
+            onlyAuthorizedTokens(collateralToken),
+            "Error: You can only leave as collateral authorized tokens"
+        );
+        require(
+            onlyAuthorizedTokens(_token),
+            "Error: You can only get authorized tokens"
+        );
+
+        transferToken(amount, collateralToken);
+
+        userBalancePeerToken[msg.sender][_token] += amount;
+    }
+
+    function transferToken(uint256 amount, address token) internal {
+        if (IERC20(token).balanceOf(msg.sender) < amount)
+            revert("Error: You need to have the collateral tokens");
+        if (!(IERC20(token).approve(address(this), amount)))
+            revert("Error: You need to approve the balance for each token");
+
+        if (!(IERC20(token).transferFrom(msg.sender, address(this), amount)))
+            revert(
+                "Error: You need to transfer an equivalent amount for each token"
+            );
+
+        emit tokenDepositComplete(token, amount);
+    }
+
+    function withdrawAmount(uint256 amount, uint256 tokenIndex)  public {
+        address token = _tokens[tokenIndex];
+                
+        require(
+            onlyAuthorizedTokens(token),
+            "Error: You can only leave as collateral authorized tokens"
+        );
+        require(
+            userBalancePeerToken[msg.sender][token] >= amount,
+            "Error: not enought balance, you need to deposit some collateral"
+        );
+
+        uint256 tax = (amount * vaultTax) / taxDenominator;
+
+        contractBalancePeerToken[token] += tax;
+        require(
+            IERC20(token).transfer(msg.sender, amount - tax),
+            "Error: the transfer failed"
+        );
+        userBalancePeerToken[msg.sender][token] -= amount;
+        emit tokenWithdrawalComplete(token, amount);
+    }
+
+    function withdrawTaxes(uint256 amount, uint256 tokenIndex)
+        public
+        onlyOwner
+    {
+        address token = EnumerableMap.get(Tokens, tokenIndex);
+        require(
+            contractBalancePeerToken[token] >= amount,
+            "Error: amount bigger thatn tax"
+        );
+
+        
+        require(
+            onlyAuthorizedTokens(token),
+            "Error: You can only leave as collateral authorized tokens"
+        );
+
+        require(
+            IERC20(token).transfer(msg.sender, amount),
+            "Error: the transfer failed"
+        );
+    }
+}
